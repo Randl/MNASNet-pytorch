@@ -28,7 +28,7 @@ claimed_acc_top1 = {224: {0.35: 0.624, 0.5: 0.678, 0.75: 0.715, 1.: 0.74, 1.3: 0
 
 
 def get_args():
-    parser = argparse.ArgumentParser(description='Mnasnet training with PyTorch')
+    parser = argparse.ArgumentParser(description='MNASNet training with PyTorch')
     parser.add_argument('--dataroot', required=True, metavar='PATH',
                         help='Path to ImageNet train and val folders, preprocessed as described in '
                              'https://github.com/facebook/fb.resnet.torch/blob/master/INSTALL.md#download-the-imagenet-dataset')
@@ -76,8 +76,8 @@ def get_args():
     parser.add_argument('--seed', type=int, default=None, metavar='S', help='random seed (default: random)')
 
     # Architecture
-    parser.add_argument('--scaling', type=float, default=1, metavar='SC', help='Scaling of ShuffleNet (default x1).')
-    parser.add_argument('--input-size', type=int, default=224, metavar='I', help='Input size of ShuffleNet.')
+    parser.add_argument('--scaling', type=float, default=1, metavar='SC', help='Scaling of MNASNet (default x1).')
+    parser.add_argument('--input-size', type=int, default=224, metavar='I', help='Input size of MNASNet.')
 
     args = parser.parse_args()
 
@@ -137,7 +137,7 @@ def main():
         print('FLOPs: {}'.format(flops))
 
     train_loader, val_loader = get_loaders(args.dataroot, args.batch_size, args.batch_size, args.input_size,
-                                           args.workers)
+                                           args.workers, args.world_size , args.local_rank)
     # define loss function (criterion) and optimizer
     criterion = torch.nn.CrossEntropyLoss()
 

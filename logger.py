@@ -63,7 +63,7 @@ class CsvLogger:
             print(text)
 
 
-    def plot_progress_errk(self, claimed_acc=None, title='ShuffleNetv2', k=1):
+    def plot_progress_errk(self, claimed_acc=None, title='MNASNet', k=1):
         if self.dummy:
             pass
         tr_str = 'train_error{}'.format(k)
@@ -85,7 +85,7 @@ class CsvLogger:
         plt.savefig(os.path.join(self.log_path, 'top{}.png'.format(k)))
 
 
-    def plot_progress_loss(self, title='ShuffleNetv2'):
+    def plot_progress_loss(self, title='MNASNet'):
         if self.dummy:
             pass
         plt.figure(figsize=(9, 8), dpi=300)
@@ -99,7 +99,7 @@ class CsvLogger:
         plt.savefig(os.path.join(self.log_path, 'loss.png'))
 
 
-    def plot_progress(self, claimed_acc1=None, claimed_acc5=None, title='ShuffleNetv2'):
+    def plot_progress(self, claimed_acc1=None, claimed_acc5=None, title='MNASNet'):
         if self.dummy:
             pass
         self.plot_progress_errk(claimed_acc1, title, 1)

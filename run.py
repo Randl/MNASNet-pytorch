@@ -22,6 +22,7 @@ def train(model, loader, epoch, optimizer, criterion, device, dtype, batch_size,
 
     enum_load = enumerate(loader) if child else enumerate(tqdm(loader))
     for batch_idx, (data, target) in enum_load:
+        #print(batch_idx, device, dtype)
         if isinstance(scheduler, CyclicLR):
             scheduler.batch_step()
         data, target = data.to(device=device, dtype=dtype), target.to(device=device)
@@ -47,7 +48,7 @@ def train(model, loader, epoch, optimizer, criterion, device, dtype, batch_size,
                                                            100. * correct1 / (batch_size * (batch_idx + 1)),
                                                            100. * corr[1] / batch_size,
                                                            100. * correct5 / (batch_size * (batch_idx + 1))))
-    return loss.item(), correct1 / len(loader.dataset), correct5 / len(loader.dataset)
+    return loss.item(), correct1 / len(loader.sampler), correct5 / len(loader.sampler)
 
 
 def test(model, loader, criterion, device, dtype, child):
@@ -70,10 +71,10 @@ def test(model, loader, criterion, device, dtype, child):
     if not child:
         tqdm.write(
         '\nTest set: Average loss: {:.4f}, Top1: {}/{} ({:.2f}%), '
-        'Top5: {}/{} ({:.2f}%)'.format(test_loss, int(correct1), len(loader.dataset),
-                                       100. * correct1 / len(loader.dataset), int(correct5),
-                                       len(loader.dataset), 100. * correct5 / len(loader.dataset)))
-    return test_loss, correct1 / len(loader.dataset), correct5 / len(loader.dataset)
+        'Top5: {}/{} ({:.2f}%)'.format(test_loss, int(correct1), len(loader.sampler),
+                                       100. * correct1 / len(loader.sampler), int(correct5),
+                                       len(loader.sampler), 100. * correct5 / len(loader.sampler)))
+    return test_loss, correct1 / len(loader.sampler), correct5 / len(loader.sampler) #TODO (wrong counting?)
 
 
 def correct(output, target, topk=(1,)):

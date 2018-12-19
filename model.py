@@ -189,7 +189,7 @@ class Mnasnet(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Linear(320 * m, num_classes)
 
-        self.init_params()
+        # self.init_params()
 
     def init_params(self):
         for m in self.modules():
