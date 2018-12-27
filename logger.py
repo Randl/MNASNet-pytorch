@@ -85,7 +85,7 @@ class CsvLogger:
         plt.savefig(os.path.join(self.log_path, 'top{}.png'.format(k)))
 
 
-    def plot_progress_loss(self, title='MNASNet'):
+    def plot_progress_loss(self, title='MNASNet'): #TODO
         if self.dummy:
             pass
         plt.figure(figsize=(9, 8), dpi=300)

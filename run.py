@@ -9,6 +9,8 @@ import torch.optim
 import torch.utils.data
 from tqdm import tqdm, trange
 
+from cosine_with_warmup import CosineLR
+
 matplotlib.use('Agg')
 
 from matplotlib import pyplot as plt
@@ -23,8 +25,8 @@ def train(model, loader, epoch, optimizer, criterion, device, dtype, batch_size,
     enum_load = enumerate(loader) if child else enumerate(tqdm(loader))
     for batch_idx, (data, target) in enum_load:
         #print(batch_idx, device, dtype)
-        if isinstance(scheduler, CyclicLR):
-            scheduler.batch_step()
+        if isinstance(scheduler, CyclicLR) or isinstance(scheduler, CosineLR):
+            scheduler.step()
         data, target = data.to(device=device, dtype=dtype), target.to(device=device)
 
         optimizer.zero_grad()
@@ -37,7 +39,6 @@ def train(model, loader, epoch, optimizer, criterion, device, dtype, batch_size,
         corr = correct(output, target, topk=(1, 5))
         correct1 += corr[0]
         correct5 += corr[1]
-
         if batch_idx % log_interval == 0 and not child:
             tqdm.write(
                 'Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}. '
