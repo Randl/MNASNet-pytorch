@@ -11,11 +11,13 @@ import torch.distributed as dist
 import torch.nn.parallel
 import torch.optim
 import torch.utils.data
-from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim.lr_scheduler import MultiStepLR, StepLR, CosineAnnealingLR
 from tqdm import trange
 
 import flops_benchmark
+from MnasNet import MnasNet
 from clr import CyclicLR
+from cosine_with_warmup import CosineLR
 from data import get_loaders
 from logger import CsvLogger
 from model import Mnasnet
@@ -33,8 +35,8 @@ def get_args():
                         help='Path to ImageNet train and val folders, preprocessed as described in '
                              'https://github.com/facebook/fb.resnet.torch/blob/master/INSTALL.md#download-the-imagenet-dataset')
     parser.add_argument('--device', default='cuda', help='device assignment ("cpu" or "cuda")')
-    parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
-                        help='Number of data loading workers (default: 4)')
+    parser.add_argument('-j', '--workers', default=6, type=int, metavar='N',
+                        help='Number of data loading workers (default: 6)')
     parser.add_argument('--type', default='float32', help='Type of tensor: float32, float16, float64. Default: float32')
 
     # distributed
@@ -44,17 +46,19 @@ def get_args():
     parser.add_argument('--dist-backend', default='nccl', type=str, help='distributed backend')
 
     # Optimization options
+    parser.add_argument('--sched', dest='sched', type=str, default='multistep')
     parser.add_argument('--epochs', type=int, default=400, help='Number of epochs to train.')
     parser.add_argument('-b', '--batch-size', default=64, type=int, metavar='N', help='mini-batch size (default: 64)')
-    parser.add_argument('--learning_rate', '-lr', type=float, default=0.01, help='The learning rate.')
+    parser.add_argument('--learning_rate', '-lr', type=float, default=0.1, help='The learning rate.')
     parser.add_argument('--momentum', '-m', type=float, default=0.9, help='Momentum.')
-    parser.add_argument('--decay', '-d', type=float, default=4e-5, help='Weight decay (L2 penalty).')
+    parser.add_argument('--decay', '-d', type=float, default=1e-4, help='Weight decay (L2 penalty).')
     parser.add_argument('--gamma', type=float, default=0.1, help='LR is multiplied by gamma at scheduled epochs.')
     parser.add_argument('--schedule', type=int, nargs='+', default=[200, 300],
                         help='Decrease learning rate at these epochs.')
+    parser.add_argument('--step', type=int,  default=40, help='Decrease learning rate each time.')
+    parser.add_argument('--warmup', default=0, type=int, metavar='N', help='Warmup length')
 
     # CLR
-    parser.add_argument('--clr', dest='clr', action='store_true', help='Use CLR')
     parser.add_argument('--min-lr', type=float, default=1e-5, help='Minimal LR for CLR.')
     parser.add_argument('--max-lr', type=float, default=1, help='Maximal LR for CLR.')
     parser.add_argument('--epochs-per-step', type=int, default=20,
@@ -83,6 +87,9 @@ def get_args():
 
     args.distributed = args.local_rank >= 0 or args.world_size > 1
     args.child = args.distributed and args.local_rank > 0
+    if not args.distributed:
+        args.local_rank = 0
+        args.world_size = 1
     if args.seed is None:
         args.seed = random.randint(1, 10000)
     random.seed(args.seed)
@@ -113,7 +120,7 @@ def get_args():
     elif args.type == 'float32':
         args.dtype = torch.float32
     elif args.type == 'float16':
-        args.dtype = torch.float16
+        args.dtype = torch.float16 # TODO
     else:
         raise ValueError('Wrong type!')  # TODO int8
 
@@ -127,10 +134,11 @@ def main():
     args = get_args()
     device, dtype = args.device, args.dtype
 
-    model = Mnasnet(m=args.scaling)
+    #model = Mnasnet(m=args.scaling)
+    model = MnasNet(width_mult=args.scaling)
     num_parameters = sum([l.nelement() for l in model.parameters()])
-    flops = flops_benchmark.count_flops(Mnasnet, 1, device,
-                                        dtype, args.input_size, 3, args.scaling)
+    flops = flops_benchmark.count_flops(MnasNet, 1, device,
+                                        dtype, args.input_size, 3, width_mult=args.scaling)
     if not args.child:  # TODO: logger
         print(model)
         print('number of parameters: {}'.format(num_parameters))
@@ -159,11 +167,17 @@ def main():
                         save_path=args.save_path)
         return
 
-    if args.clr:
+    if args.sched == 'clr':
         scheduler = CyclicLR(optimizer, base_lr=args.min_lr, max_lr=args.max_lr,
                              step_size=args.epochs_per_step * len(train_loader), mode=args.mode)
-    else:
+    elif args.sched == 'multistep':
         scheduler = MultiStepLR(optimizer, milestones=args.schedule, gamma=args.gamma)
+    elif args.sched == 'cosine':
+        scheduler = CosineLR(optimizer, args.epochs, args.warmup, len(train_loader))
+    elif args.sched == 'gamma':
+        scheduler = StepLR(optimizer, step_size=30, gamma=args.gamma)
+    else:
+        raise ValueError('Wrong scheduler!')
 
     best_test = 0
 

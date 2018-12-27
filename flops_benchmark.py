@@ -246,8 +246,8 @@ def add_flops_mask_variable_or_reset(module):
         module.__mask__ = None
 
 
-def count_flops(model, batch_size, device, dtype, input_size, in_channels, *params):
-    net = model(*params)
+def count_flops(model, batch_size, device, dtype, input_size, in_channels, **kwargs):
+    net = model(**kwargs)
     # print(net)
     net = add_flops_counting_methods(net)
 
