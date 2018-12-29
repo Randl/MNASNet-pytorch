@@ -75,7 +75,7 @@ def test(model, loader, criterion, device, dtype, child):
         'Top5: {}/{} ({:.2f}%)'.format(test_loss, int(correct1), len(loader.sampler),
                                        100. * correct1 / len(loader.sampler), int(correct5),
                                        len(loader.sampler), 100. * correct5 / len(loader.sampler)))
-    return test_loss, correct1 / len(loader.sampler), correct5 / len(loader.sampler) #TODO (wrong counting?)
+    return test_loss, correct1 / len(loader.sampler), correct5 / len(loader.sampler)
 
 
 def correct(output, target, topk=(1,)):
@@ -93,10 +93,12 @@ def correct(output, target, topk=(1,)):
     return res
 
 
-def save_checkpoint(state, is_best, filepath='./', filename='checkpoint.pth.tar'):
-    save_path = os.path.join(filepath, filename)
-    best_path = os.path.join(filepath, 'model_best.pth.tar')
+def save_checkpoint(state, is_best, filepath='./', filename='checkpoint{}.pth.tar', local_rank=0, test=False):
+    save_path = os.path.join(filepath, filename.format(local_rank))
+    best_path = os.path.join(filepath, 'model_best{}.pth.tar'.format(local_rank))
     torch.save(state, save_path)
+    if test:
+        torch.load(save_path)
     if is_best:
         shutil.copyfile(save_path, best_path)
 

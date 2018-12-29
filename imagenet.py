@@ -11,7 +11,7 @@ import torch.distributed as dist
 import torch.nn.parallel
 import torch.optim
 import torch.utils.data
-from torch.optim.lr_scheduler import MultiStepLR, StepLR, CosineAnnealingLR
+from torch.optim.lr_scheduler import MultiStepLR, StepLR
 from tqdm import trange
 
 import flops_benchmark
@@ -20,7 +20,6 @@ from clr import CyclicLR
 from cosine_with_warmup import CosineLR
 from data import get_loaders
 from logger import CsvLogger
-from model import Mnasnet
 from run import train, test, save_checkpoint, find_bounds_clr
 
 # https://arxiv.org/abs/1807.11626
@@ -55,7 +54,7 @@ def get_args():
     parser.add_argument('--gamma', type=float, default=0.1, help='LR is multiplied by gamma at scheduled epochs.')
     parser.add_argument('--schedule', type=int, nargs='+', default=[200, 300],
                         help='Decrease learning rate at these epochs.')
-    parser.add_argument('--step', type=int,  default=40, help='Decrease learning rate each time.')
+    parser.add_argument('--step', type=int, default=40, help='Decrease learning rate each time.')
     parser.add_argument('--warmup', default=0, type=int, metavar='N', help='Warmup length')
 
     # CLR
@@ -120,7 +119,7 @@ def get_args():
     elif args.type == 'float32':
         args.dtype = torch.float32
     elif args.type == 'float16':
-        args.dtype = torch.float16 # TODO
+        args.dtype = torch.float16  # TODO
     else:
         raise ValueError('Wrong type!')  # TODO int8
 
@@ -134,30 +133,31 @@ def main():
     args = get_args()
     device, dtype = args.device, args.dtype
 
-    #model = Mnasnet(m=args.scaling)
+    # model = Mnasnet(m=args.scaling)
     model = MnasNet(width_mult=args.scaling)
     num_parameters = sum([l.nelement() for l in model.parameters()])
     flops = flops_benchmark.count_flops(MnasNet, 1, device,
                                         dtype, args.input_size, 3, width_mult=args.scaling)
-    if not args.child:  # TODO: logger
+    if not args.child:
         print(model)
         print('number of parameters: {}'.format(num_parameters))
         print('FLOPs: {}'.format(flops))
 
     train_loader, val_loader = get_loaders(args.dataroot, args.batch_size, args.batch_size, args.input_size,
-                                           args.workers, args.world_size , args.local_rank)
+                                           args.workers, args.world_size, args.local_rank)
     # define loss function (criterion) and optimizer
     criterion = torch.nn.CrossEntropyLoss()
 
     model, criterion = model.to(device=device, dtype=dtype), criterion.to(device=device, dtype=dtype)
     if args.distributed:
         args.device_ids = [args.local_rank]
-        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_init,
-                                world_size=args.world_size, rank=args.local_rank)
+        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_init, world_size=args.world_size,
+                                rank=args.local_rank)
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
                                                           output_device=args.local_rank)
         print('Node #{}'.format(args.local_rank))
-
+    else:
+        model = torch.nn.parallel.DataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
 
     optimizer = torch.optim.SGD(model.parameters(), args.learning_rate, momentum=args.momentum, weight_decay=args.decay,
                                 nesterov=True)
@@ -191,11 +191,10 @@ def main():
             best_test = checkpoint['best_prec1']
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
+            print("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
         elif os.path.isdir(args.resume):
-            checkpoint_path = os.path.join(args.resume, 'checkpoint.pth.tar')
-            csv_path = os.path.join(args.resume, 'results.csv')
+            checkpoint_path = os.path.join(args.resume, 'checkpoint{}.pth.tar'.format(args.local_rank))
+            csv_path = os.path.join(args.resume, 'results{}.csv'.format(args.local_rank))
             print("=> loading checkpoint '{}'".format(checkpoint_path))
             checkpoint = torch.load(checkpoint_path, map_location=device)
             args.start_epoch = checkpoint['epoch'] - 1
@@ -212,10 +211,10 @@ def main():
             print("=> no checkpoint found at '{}'".format(args.resume))
 
     if args.evaluate:
-        loss, top1, top5 = test(model, val_loader, criterion, device, dtype)  # TODO
+        loss, top1, top5 = test(model, val_loader, criterion, device, dtype, args.child)  # TODO
         return
 
-    csv_logger = CsvLogger(filepath=args.save_path, data=data, dummy=args.child)
+    csv_logger = CsvLogger(filepath=args.save_path, data=data, local_rank=args.local_rank)
     csv_logger.save_params(sys.argv, args)
 
     claimed_acc1 = None
@@ -227,11 +226,12 @@ def main():
                 csv_logger.write_text('Claimed accuracy is {:.2f}% top-1'.format(claimed_acc1 * 100.))
     train_network(args.start_epoch, args.epochs, scheduler, model, train_loader, val_loader, optimizer, criterion,
                   device, dtype, args.batch_size, args.log_interval, csv_logger, args.save_path, claimed_acc1,
-                  claimed_acc5, best_test, args.child)
+                  claimed_acc5, best_test, args.local_rank, args.child)
 
 
 def train_network(start_epoch, epochs, scheduler, model, train_loader, val_loader, optimizer, criterion, device, dtype,
-                  batch_size, log_interval, csv_logger, save_path, claimed_acc1, claimed_acc5, best_test, child):
+                  batch_size, log_interval, csv_logger, save_path, claimed_acc1, claimed_acc5, best_test, local_rank,
+                  child):
     my_range = range if child else trange
     for epoch in my_range(start_epoch, epochs + 1):
         if not isinstance(scheduler, CyclicLR):
@@ -243,7 +243,8 @@ def train_network(start_epoch, epochs, scheduler, model, train_loader, val_loade
                           'val_loss': test_loss, 'train_error1': 1 - train_accuracy1,
                           'train_error5': 1 - train_accuracy5, 'train_loss': train_loss})
         save_checkpoint({'epoch': epoch + 1, 'state_dict': model.state_dict(), 'best_prec1': best_test,
-                         'optimizer': optimizer.state_dict()}, test_accuracy1 > best_test, filepath=save_path)
+                         'optimizer': optimizer.state_dict()}, test_accuracy1 > best_test, filepath=save_path,
+                        local_rank=local_rank)
 
         csv_logger.plot_progress(claimed_acc1=claimed_acc1, claimed_acc5=claimed_acc5)
 
