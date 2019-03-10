@@ -1,31 +1,33 @@
-from torch.autograd import Variable
-import torch.nn as nn
-import torch
 import math
 
-# from https://github.com/billhhh/MnasNet-pytorch-pretrained
+import torch
+import torch.nn as nn
+from torch.autograd import Variable
 
-def Conv_3x3(inp, oup, stride):
+
+# from https://github.com/billhhh/MnasNet-pytorch-pretrained
+def Conv_3x3(inp, oup, stride, activation=nn.ReLU6, act_params={"inplace": True}):
     return nn.Sequential(
         nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
         nn.BatchNorm2d(oup),
-        nn.ReLU6(inplace=True)
+        activation(**act_params)
     )
 
 
-def Conv_1x1(inp, oup):
+def Conv_1x1(inp, oup, activation=nn.ReLU6, act_params={"inplace": True}):
     return nn.Sequential(
         nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
         nn.BatchNorm2d(oup),
-        nn.ReLU6(inplace=True)
+        activation(**act_params)
     )
 
-def SepConv_3x3(inp, oup): #input=32, output=16
+
+def SepConv_3x3(inp, oup, activation=nn.ReLU6, act_params={"inplace": True}):  # input=32, output=16
     return nn.Sequential(
         # dw
-        nn.Conv2d(inp, inp , 3, 1, 1, groups=inp, bias=False),
+        nn.Conv2d(inp, inp, 3, 1, 1, groups=inp, bias=False),
         nn.BatchNorm2d(inp),
-        nn.ReLU6(inplace=True),
+        activation(**act_params),
         # pw-linear
         nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
         nn.BatchNorm2d(oup),
@@ -33,7 +35,7 @@ def SepConv_3x3(inp, oup): #input=32, output=16
 
 
 class InvertedResidual(nn.Module):
-    def __init__(self, inp, oup, stride, expand_ratio, kernel):
+    def __init__(self, inp, oup, stride, expand_ratio, kernel, activation=nn.ReLU6, act_params={"inplace": True}):
         super(InvertedResidual, self).__init__()
         self.stride = stride
         assert stride in [1, 2]
@@ -44,11 +46,12 @@ class InvertedResidual(nn.Module):
             # pw
             nn.Conv2d(inp, inp * expand_ratio, 1, 1, 0, bias=False),
             nn.BatchNorm2d(inp * expand_ratio),
-            nn.ReLU6(inplace=True),
+            activation(**act_params),
             # dw
-            nn.Conv2d(inp * expand_ratio, inp * expand_ratio, kernel, stride, kernel // 2, groups=inp * expand_ratio, bias=False),
+            nn.Conv2d(inp * expand_ratio, inp * expand_ratio, kernel, stride, kernel // 2, groups=inp * expand_ratio,
+                      bias=False),
             nn.BatchNorm2d(inp * expand_ratio),
-            nn.ReLU6(inplace=True),
+            activation(**act_params),
             # pw-linear
             nn.Conv2d(inp * expand_ratio, oup, 1, 1, 0, bias=False),
             nn.BatchNorm2d(oup),
@@ -62,8 +65,11 @@ class InvertedResidual(nn.Module):
 
 
 class MnasNet(nn.Module):
-    def __init__(self, n_class=1000, input_size=224, width_mult=1.):
+    def __init__(self, n_class=1000, input_size=224, width_mult=1., activation=nn.ReLU6, act_params={"inplace": True}):
         super(MnasNet, self).__init__()
+
+        self.activation = activation
+        self.act_params = act_params
 
         # setting of inverted residual blocks
         self.interverted_residual_setting = [
@@ -81,7 +87,8 @@ class MnasNet(nn.Module):
         self.last_channel = int(1280 * width_mult) if width_mult > 1.0 else 1280
 
         # building first two layer
-        self.features = [Conv_3x3(3, input_channel, 2), SepConv_3x3(input_channel, 16)]
+        self.features = [Conv_3x3(3, input_channel, 2, self.activation, self.act_params),
+                         SepConv_3x3(input_channel, 16, self.activation, self.act_params)]
         input_channel = 16
 
         # building inverted residual blocks (MBConv)
@@ -89,13 +96,15 @@ class MnasNet(nn.Module):
             output_channel = int(c * width_mult)
             for i in range(n):
                 if i == 0:
-                    self.features.append(InvertedResidual(input_channel, output_channel, s, t, k))
+                    self.features.append(InvertedResidual(input_channel, output_channel, s, t, k,
+                                                          self.activation, self.act_params))
                 else:
-                    self.features.append(InvertedResidual(input_channel, output_channel, 1, t, k))
+                    self.features.append(InvertedResidual(input_channel, output_channel, 1, t, k,
+                                                          self.activation, self.act_params))
                 input_channel = output_channel
 
         # building last several layers
-        self.features.append(Conv_1x1(input_channel, self.last_channel))
+        self.features.append(Conv_1x1(input_channel, self.last_channel, self.activation, self.act_params))
         self.features.append(nn.AdaptiveAvgPool2d(1))
 
         # make it nn.Sequential
@@ -103,7 +112,7 @@ class MnasNet(nn.Module):
 
         # building classifier
         self.classifier = nn.Sequential(
-            nn.Dropout(0.0),
+            nn.Dropout(0.0),  # TODO
             nn.Linear(self.last_channel, n_class),
         )
 
