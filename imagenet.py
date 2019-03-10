@@ -20,6 +20,7 @@ from clr import CyclicLR
 from cosine_with_warmup import CosineLR
 from data import get_loaders
 from logger import CsvLogger
+from optimizer_wrapper import OptimizerWrapper
 from run import train, test, save_checkpoint, find_bounds_clr
 
 # https://arxiv.org/abs/1807.11626
@@ -119,7 +120,7 @@ def get_args():
     elif args.type == 'float32':
         args.dtype = torch.float32
     elif args.type == 'float16':
-        args.dtype = torch.float16  # TODO
+        args.dtype = torch.float16
     else:
         raise ValueError('Wrong type!')  # TODO int8
 
@@ -129,11 +130,21 @@ def get_args():
     return args
 
 
+def is_bn(module):
+    return isinstance(module, torch.nn.BatchNorm1d) or \
+           isinstance(module, torch.nn.BatchNorm2d) or \
+           isinstance(module, torch.nn.BatchNorm3d)
+
+
+class Optimizer(object):
+    def __init__(self):
+        pass
+
+
 def main():
     args = get_args()
     device, dtype = args.device, args.dtype
 
-    # model = Mnasnet(m=args.scaling)
     model = MnasNet(width_mult=args.scaling)
     num_parameters = sum([l.nelement() for l in model.parameters()])
     flops = flops_benchmark.count_flops(MnasNet, 1, device,
@@ -149,6 +160,11 @@ def main():
     criterion = torch.nn.CrossEntropyLoss()
 
     model, criterion = model.to(device=device, dtype=dtype), criterion.to(device=device, dtype=dtype)
+    if args.dtype == torch.float16:
+        for module in model.modules():  # FP batchnorm
+            if is_bn(module):
+                module.to(dtype=torch.float32)
+
     if args.distributed:
         args.device_ids = [args.local_rank]
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_init, world_size=args.world_size,
@@ -159,26 +175,36 @@ def main():
     else:
         model = torch.nn.parallel.DataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
 
-    optimizer = torch.optim.SGD(model.parameters(), args.learning_rate, momentum=args.momentum, weight_decay=args.decay,
-                                nesterov=True)
+    optimizer_class = torch.optim.SGD
+    optimizer_params = {"lr": args.learning_rate, "momentum": args.momentum, "weight_decay": args.decay,
+                        "nesterov": True}
     if args.find_clr:
+        optimizer = torch.optim.SGD(model.parameters(), args.learning_rate, momentum=args.momentum,
+                                    weight_decay=args.decay, nesterov=True)
         find_bounds_clr(model, train_loader, optimizer, criterion, device, dtype, min_lr=args.min_lr,
                         max_lr=args.max_lr, step_size=args.epochs_per_step * len(train_loader), mode=args.mode,
                         save_path=args.save_path)
         return
 
     if args.sched == 'clr':
-        scheduler = CyclicLR(optimizer, base_lr=args.min_lr, max_lr=args.max_lr,
-                             step_size=args.epochs_per_step * len(train_loader), mode=args.mode)
+        scheduler_class = CyclicLR
+        scheduler_params = {"base_lr": args.min_lr, "max_lr": args.max_lr,
+                            "step_size": args.epochs_per_step * len(train_loader), "mode": args.mode}
     elif args.sched == 'multistep':
-        scheduler = MultiStepLR(optimizer, milestones=args.schedule, gamma=args.gamma)
+        scheduler_class = MultiStepLR
+        scheduler_params = {"milestones": args.schedule, "gamma": args.gamma}
     elif args.sched == 'cosine':
-        scheduler = CosineLR(optimizer, args.epochs, args.warmup, len(train_loader))
+        scheduler_class = CosineLR
+        scheduler_params = {"max_epochs": args.epochs, "warmup_epochs": args.warmup, "iter_in_epoch": len(train_loader)}
     elif args.sched == 'gamma':
-        scheduler = StepLR(optimizer, step_size=30, gamma=args.gamma)
+        scheduler_class = StepLR
+        scheduler_params = {"step_size": 30, "gamma": args.gamma}
     else:
         raise ValueError('Wrong scheduler!')
 
+    optim = OptimizerWrapper(model, optimizer_class=optimizer_class, optimizer_params=optimizer_params,
+                             scheduler_class=scheduler_class, scheduler_params=scheduler_params,
+                             use_shadow_weights=args.dtype == torch.float16)
     best_test = 0
 
     # optionally resume from a checkpoint
@@ -190,7 +216,7 @@ def main():
             args.start_epoch = checkpoint['epoch'] - 1
             best_test = checkpoint['best_prec1']
             model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            optim.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
         elif os.path.isdir(args.resume):
             checkpoint_path = os.path.join(args.resume, 'checkpoint{}.pth.tar'.format(args.local_rank))
@@ -200,7 +226,7 @@ def main():
             args.start_epoch = checkpoint['epoch'] - 1
             best_test = checkpoint['best_prec1']
             model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            optim.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})".format(checkpoint_path, checkpoint['epoch']))
             data = []
             with open(csv_path) as csvfile:
@@ -224,26 +250,26 @@ def main():
             claimed_acc1 = claimed_acc_top1[args.input_size][args.scaling]
             if not args.child:
                 csv_logger.write_text('Claimed accuracy is {:.2f}% top-1'.format(claimed_acc1 * 100.))
-    train_network(args.start_epoch, args.epochs, scheduler, model, train_loader, val_loader, optimizer, criterion,
+    train_network(args.start_epoch, args.epochs, optim, model, train_loader, val_loader, criterion,
                   device, dtype, args.batch_size, args.log_interval, csv_logger, args.save_path, claimed_acc1,
                   claimed_acc5, best_test, args.local_rank, args.child)
 
 
-def train_network(start_epoch, epochs, scheduler, model, train_loader, val_loader, optimizer, criterion, device, dtype,
+def train_network(start_epoch, epochs, optim, model, train_loader, val_loader, criterion, device, dtype,
                   batch_size, log_interval, csv_logger, save_path, claimed_acc1, claimed_acc5, best_test, local_rank,
                   child):
     my_range = range if child else trange
     for epoch in my_range(start_epoch, epochs + 1):
-        if not isinstance(scheduler, CyclicLR):
-            scheduler.step()
-        train_loss, train_accuracy1, train_accuracy5, = train(model, train_loader, epoch, optimizer, criterion, device,
-                                                              dtype, batch_size, log_interval, scheduler, child)
+        if not isinstance(optim.scheduler, CyclicLR) and not isinstance(optim.scheduler, CosineLR):
+            optim.scheduler_step()
+        train_loss, train_accuracy1, train_accuracy5, = train(model, train_loader, epoch, optim, criterion, device,
+                                                              dtype, batch_size, log_interval, child)
         test_loss, test_accuracy1, test_accuracy5 = test(model, val_loader, criterion, device, dtype, child)
         csv_logger.write({'epoch': epoch + 1, 'val_error1': 1 - test_accuracy1, 'val_error5': 1 - test_accuracy5,
                           'val_loss': test_loss, 'train_error1': 1 - train_accuracy1,
                           'train_error5': 1 - train_accuracy5, 'train_loss': train_loss})
         save_checkpoint({'epoch': epoch + 1, 'state_dict': model.state_dict(), 'best_prec1': best_test,
-                         'optimizer': optimizer.state_dict()}, test_accuracy1 > best_test, filepath=save_path,
+                         'optimizer': optim.state_dict()}, test_accuracy1 > best_test, filepath=save_path,
                         local_rank=local_rank)
 
         csv_logger.plot_progress(claimed_acc1=claimed_acc1, claimed_acc5=claimed_acc5)
