@@ -81,6 +81,7 @@ def get_args():
 
     # Architecture
     parser.add_argument('--scaling', type=float, default=1, metavar='SC', help='Scaling of MNASNet (default x1).')
+    parser.add_argument('--dp', type=float, default=0.0, metavar='DP', help='Dropping probability of DropBlock')
     parser.add_argument('--input-size', type=int, default=224, metavar='I', help='Input size of MNASNet.')
 
     args = parser.parse_args()
@@ -136,16 +137,16 @@ def is_bn(module):
            isinstance(module, torch.nn.BatchNorm3d)
 
 
-class Optimizer(object):
-    def __init__(self):
-        pass
-
-
+# TODO mixup: https://github.com/moskomule/mixup.pytorch/blob/master/main.py
+# TODO label smoothing: https://github.com/eladhoffer/utils.pytorch/blob/master/cross_entropy.py (0.1)
 def main():
     args = get_args()
     device, dtype = args.device, args.dtype
 
-    model = MnasNet(width_mult=args.scaling)
+    train_loader, val_loader = get_loaders(args.dataroot, args.batch_size, args.batch_size, args.input_size,
+                                           args.workers, args.world_size, args.local_rank)
+
+    model = MnasNet(width_mult=args.scaling, drop_prob=0.0, num_steps=len(train_loader) * args.epochs)
     num_parameters = sum([l.nelement() for l in model.parameters()])
     flops = flops_benchmark.count_flops(MnasNet, 1, device,
                                         dtype, args.input_size, 3, width_mult=args.scaling)
@@ -154,8 +155,6 @@ def main():
         print('number of parameters: {}'.format(num_parameters))
         print('FLOPs: {}'.format(flops))
 
-    train_loader, val_loader = get_loaders(args.dataroot, args.batch_size, args.batch_size, args.input_size,
-                                           args.workers, args.world_size, args.local_rank)
     # define loss function (criterion) and optimizer
     criterion = torch.nn.CrossEntropyLoss()
 

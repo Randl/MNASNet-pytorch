@@ -4,8 +4,10 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 
-
 # from https://github.com/billhhh/MnasNet-pytorch-pretrained
+from dropblock import DropBlockScheduled, DropBlock2D
+
+
 def Conv_3x3(inp, oup, stride, activation=nn.ReLU6, act_params={"inplace": True}):
     return nn.Sequential(
         nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
@@ -35,7 +37,8 @@ def SepConv_3x3(inp, oup, activation=nn.ReLU6, act_params={"inplace": True}):  #
 
 
 class InvertedResidual(nn.Module):
-    def __init__(self, inp, oup, stride, expand_ratio, kernel, activation=nn.ReLU6, act_params={"inplace": True}):
+    def __init__(self, inp, oup, stride, expand_ratio, kernel, drop_prob=0.0, num_steps=3e5, activation=nn.ReLU6,
+                 act_params={"inplace": True}):
         super(InvertedResidual, self).__init__()
         self.stride = stride
         assert stride in [1, 2]
@@ -46,26 +49,48 @@ class InvertedResidual(nn.Module):
             # pw
             nn.Conv2d(inp, inp * expand_ratio, 1, 1, 0, bias=False),
             nn.BatchNorm2d(inp * expand_ratio),
+            DropBlockScheduled(
+                DropBlock2D(drop_prob=drop_prob, block_size=7),
+                start_value=0.,
+                stop_value=drop_prob,
+                nr_steps=num_steps),
             activation(**act_params),
             # dw
             nn.Conv2d(inp * expand_ratio, inp * expand_ratio, kernel, stride, kernel // 2, groups=inp * expand_ratio,
                       bias=False),
             nn.BatchNorm2d(inp * expand_ratio),
+            DropBlockScheduled(
+                DropBlock2D(drop_prob=drop_prob, block_size=7),
+                start_value=0.,
+                stop_value=drop_prob,
+                nr_steps=num_steps),
             activation(**act_params),
             # pw-linear
             nn.Conv2d(inp * expand_ratio, oup, 1, 1, 0, bias=False),
             nn.BatchNorm2d(oup),
+            DropBlockScheduled(
+                DropBlock2D(drop_prob=drop_prob, block_size=7),
+                start_value=0.,
+                stop_value=drop_prob,
+                nr_steps=num_steps),
         )
+        if self.use_res_connect:
+            self.skip_drop = DropBlockScheduled(
+                DropBlock2D(drop_prob=drop_prob, block_size=7),
+                start_value=0.,
+                stop_value=drop_prob,
+                nr_steps=num_steps)
 
     def forward(self, x):
         if self.use_res_connect:
-            return x + self.conv(x)
+            return self.skip_drop(x + self.conv(x))
         else:
             return self.conv(x)
 
 
 class MnasNet(nn.Module):
-    def __init__(self, n_class=1000, input_size=224, width_mult=1., activation=nn.ReLU6, act_params={"inplace": True}):
+    def __init__(self, n_class=1000, input_size=224, width_mult=1., drop_prob=0.0, num_steps=3e5, activation=nn.ReLU6,
+                 act_params={"inplace": True}):
         super(MnasNet, self).__init__()
 
         self.activation = activation
@@ -73,14 +98,15 @@ class MnasNet(nn.Module):
 
         # setting of inverted residual blocks
         self.interverted_residual_setting = [
-            # t, c, n, s, k
-            [3, 24,  3, 2, 3],  # -> 56x56
-            [3, 40,  3, 2, 5],  # -> 28x28
-            [6, 80,  3, 2, 5],  # -> 14x14
-            [6, 96,  2, 1, 3],  # -> 14x14
-            [6, 192, 4, 2, 5],  # -> 7x7
-            [6, 320, 1, 1, 3],  # -> 7x7
+            # t, c, n, s, k, dp
+            [3, 24, 3, 2, 3, 0],  # -> 56x56
+            [3, 40, 3, 2, 5, 0],  # -> 28x28
+            [6, 80, 3, 2, 5, 0],  # -> 14x14
+            [6, 96, 2, 1, 3, drop_prob],  # -> 14x14
+            [6, 192, 4, 2, 5, drop_prob],  # -> 7x7
+            [6, 320, 1, 1, 3, drop_prob],  # -> 7x7
         ]
+        self.num_steps = num_steps
 
         assert input_size % 32 == 0
         input_channel = int(32 * width_mult)
@@ -92,14 +118,14 @@ class MnasNet(nn.Module):
         input_channel = 16
 
         # building inverted residual blocks (MBConv)
-        for t, c, n, s, k in self.interverted_residual_setting:
+        for t, c, n, s, k, dp in self.interverted_residual_setting:
             output_channel = int(c * width_mult)
             for i in range(n):
                 if i == 0:
-                    self.features.append(InvertedResidual(input_channel, output_channel, s, t, k,
+                    self.features.append(InvertedResidual(input_channel, output_channel, s, t, k, dp, self.num_steps,
                                                           self.activation, self.act_params))
                 else:
-                    self.features.append(InvertedResidual(input_channel, output_channel, 1, t, k,
+                    self.features.append(InvertedResidual(input_channel, output_channel, 1, t, k, dp, self.num_steps,
                                                           self.activation, self.act_params))
                 input_channel = output_channel
 
