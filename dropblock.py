@@ -45,11 +45,8 @@ class DropBlock2D(nn.Module):
             # get gamma value
             gamma = self._compute_gamma(x)
 
-            # sample mask
-            mask = (torch.rand(x.shape[0], *x.shape[2:]) < gamma).float()
-
-            # place mask on input device
-            mask = mask.to(x.device)
+            # sample mask and place on input device
+            mask = (torch.rand(x.shape[0], *x.shape[2:]) < gamma).to(x)
 
             # compute block mask
             block_mask = self._compute_block_mask(mask)
@@ -115,11 +112,8 @@ class DropBlock3D(DropBlock2D):
             # get gamma value
             gamma = self._compute_gamma(x)
 
-            # sample mask
-            mask = (torch.rand(x.shape[0], *x.shape[2:]) < gamma).float()
-
-            # place mask on input device
-            mask = mask.to(x.device)
+            # sample mask and place on input device
+            mask = (torch.rand(x.shape[0], *x.shape[2:]) < gamma).to(x)
 
             # compute block mask
             block_mask = self._compute_block_mask(mask)
@@ -157,7 +151,8 @@ class DropBlockScheduled(nn.Module):
         self.drop_values = np.linspace(start=start_value, stop=stop_value, num=nr_steps)
 
     def forward(self, x):
-        self.step()
+        if self.training:
+            self.step()
         return self.dropblock(x)
 
     def step(self):

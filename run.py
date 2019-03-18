@@ -18,16 +18,16 @@ from matplotlib import pyplot as plt
 from clr import CyclicLR
 
 
-def train(model, loader, epoch, optim, criterion, device, dtype, batch_size, log_interval, child):
+def train(model, loader, mixup, epoch, optim, criterion, device, dtype, batch_size, log_interval, child):
     model.train()
     correct1, correct5 = 0, 0
 
     enum_load = enumerate(loader) if child else enumerate(tqdm(loader))
-    for batch_idx, (data, target) in enum_load:
-        # print(batch_idx, device, dtype)
+    for batch_idx, (data, t) in enum_load:
         if isinstance(optim.scheduler, CyclicLR) or isinstance(optim.scheduler, CosineLR):
             optim.scheduler_step()
-        data, target = data.to(device=device, dtype=dtype), target.to(device=device)
+        data, t = data.to(device=device, dtype=dtype), t.to(device=device)
+        data, target = mixup(data, t)
 
         optim.zero_grad()
         output = model(data)
@@ -36,7 +36,7 @@ def train(model, loader, epoch, optim, criterion, device, dtype, batch_size, log
         loss.backward()
         optim.optimizer_step()
 
-        corr = correct(output, target, topk=(1, 5))
+        corr = correct(output, t, topk=(1, 5))
         correct1 += corr[0]
         correct5 += corr[1]
         if batch_idx % log_interval == 0 and not child:

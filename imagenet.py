@@ -19,8 +19,10 @@ from MnasNet import MnasNet
 from clr import CyclicLR
 from cosine_with_warmup import CosineLR
 from data import get_loaders
-from logger import CsvLogger
-from optimizer_wrapper import OptimizerWrapper
+from mixup import Mixup
+from utils.cross_entropy import CrossEntropyLoss
+from utils.logger import CsvLogger
+from utils.optimizer_wrapper import OptimizerWrapper
 from run import train, test, save_checkpoint, find_bounds_clr
 
 # https://arxiv.org/abs/1807.11626
@@ -57,6 +59,9 @@ def get_args():
                         help='Decrease learning rate at these epochs.')
     parser.add_argument('--step', type=int, default=40, help='Decrease learning rate each time.')
     parser.add_argument('--warmup', default=0, type=int, metavar='N', help='Warmup length')
+    parser.add_argument('--mixup', type=float, default=0.2, help='Mixup gamma value.')
+    parser.add_argument('--smooth-eps', type=float, default=0.1, help='Label smoothing epsilon value.')
+    parser.add_argument('--num-classes', type=int, default=1000, help='Number of classes.')
 
     # CLR
     parser.add_argument('--min-lr', type=float, default=1e-5, help='Minimal LR for CLR.')
@@ -81,7 +86,7 @@ def get_args():
 
     # Architecture
     parser.add_argument('--scaling', type=float, default=1, metavar='SC', help='Scaling of MNASNet (default x1).')
-    parser.add_argument('--dp', type=float, default=0.0, metavar='DP', help='Dropping probability of DropBlock')
+    parser.add_argument('--dp', type=float, default=0.1, metavar='DP', help='Dropping probability of DropBlock')
     parser.add_argument('--input-size', type=int, default=224, metavar='I', help='Input size of MNASNet.')
 
     args = parser.parse_args()
@@ -136,9 +141,6 @@ def is_bn(module):
            isinstance(module, torch.nn.BatchNorm2d) or \
            isinstance(module, torch.nn.BatchNorm3d)
 
-
-# TODO mixup: https://github.com/moskomule/mixup.pytorch/blob/master/main.py
-# TODO label smoothing: https://github.com/eladhoffer/utils.pytorch/blob/master/cross_entropy.py (0.1)
 def main():
     args = get_args()
     device, dtype = args.device, args.dtype
@@ -146,7 +148,8 @@ def main():
     train_loader, val_loader = get_loaders(args.dataroot, args.batch_size, args.batch_size, args.input_size,
                                            args.workers, args.world_size, args.local_rank)
 
-    model = MnasNet(width_mult=args.scaling, drop_prob=0.0, num_steps=len(train_loader) * args.epochs)
+    model = MnasNet(n_class=args.num_classes, width_mult=args.scaling, drop_prob=0.0,
+                    num_steps=len(train_loader) * args.epochs)
     num_parameters = sum([l.nelement() for l in model.parameters()])
     flops = flops_benchmark.count_flops(MnasNet, 1, device,
                                         dtype, args.input_size, 3, width_mult=args.scaling)
@@ -156,7 +159,8 @@ def main():
         print('FLOPs: {}'.format(flops))
 
     # define loss function (criterion) and optimizer
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = CrossEntropyLoss()
+    mixup = Mixup(args.num_classes, args.mixup, args.smooth_eps)
 
     model, criterion = model.to(device=device, dtype=dtype), criterion.to(device=device, dtype=dtype)
     if args.dtype == torch.float16:
@@ -249,20 +253,20 @@ def main():
             claimed_acc1 = claimed_acc_top1[args.input_size][args.scaling]
             if not args.child:
                 csv_logger.write_text('Claimed accuracy is {:.2f}% top-1'.format(claimed_acc1 * 100.))
-    train_network(args.start_epoch, args.epochs, optim, model, train_loader, val_loader, criterion,
+    train_network(args.start_epoch, args.epochs, optim, model, train_loader, val_loader, criterion, mixup,
                   device, dtype, args.batch_size, args.log_interval, csv_logger, args.save_path, claimed_acc1,
                   claimed_acc5, best_test, args.local_rank, args.child)
 
 
-def train_network(start_epoch, epochs, optim, model, train_loader, val_loader, criterion, device, dtype,
+def train_network(start_epoch, epochs, optim, model, train_loader, val_loader, criterion, mixup, device, dtype,
                   batch_size, log_interval, csv_logger, save_path, claimed_acc1, claimed_acc5, best_test, local_rank,
                   child):
     my_range = range if child else trange
     for epoch in my_range(start_epoch, epochs + 1):
         if not isinstance(optim.scheduler, CyclicLR) and not isinstance(optim.scheduler, CosineLR):
             optim.scheduler_step()
-        train_loss, train_accuracy1, train_accuracy5, = train(model, train_loader, epoch, optim, criterion, device,
-                                                              dtype, batch_size, log_interval, child)
+        train_loss, train_accuracy1, train_accuracy5, = train(model, train_loader, mixup, epoch, optim, criterion,
+                                                              device, dtype, batch_size, log_interval, child)
         test_loss, test_accuracy1, test_accuracy5 = test(model, val_loader, criterion, device, dtype, child)
         csv_logger.write({'epoch': epoch + 1, 'val_error1': 1 - test_accuracy1, 'val_error5': 1 - test_accuracy5,
                           'val_loss': test_loss, 'train_error1': 1 - train_accuracy1,
