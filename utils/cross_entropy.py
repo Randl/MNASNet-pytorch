@@ -23,8 +23,6 @@ def onehot(indexes, N=None, ignore_index=None):
 
 
 def _is_long(x):
-    if hasattr(x, 'data'):
-        x = x.data
     return isinstance(x, torch.LongTensor) or isinstance(x, torch.cuda.LongTensor)
 
 

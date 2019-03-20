@@ -5,6 +5,7 @@ import random
 import sys
 from datetime import datetime
 
+import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
@@ -20,10 +21,10 @@ from clr import CyclicLR
 from cosine_with_warmup import CosineLR
 from data import get_loaders
 from mixup import Mixup
+from run import train, test, save_checkpoint, find_bounds_clr
 from utils.cross_entropy import CrossEntropyLoss
 from utils.logger import CsvLogger
 from utils.optimizer_wrapper import OptimizerWrapper
-from run import train, test, save_checkpoint, find_bounds_clr
 
 # https://arxiv.org/abs/1807.11626
 # input_size, scale
@@ -83,6 +84,7 @@ def get_args():
     parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                         help='Number of batches between log messages')
     parser.add_argument('--seed', type=int, default=None, metavar='S', help='random seed (default: random)')
+    parser.add_argument('--determenistic', dest='deter', action='store_true', help='use determenistic enviroment')
 
     # Architecture
     parser.add_argument('--scaling', type=float, default=1, metavar='SC', help='Scaling of MNASNet (default x1).')
@@ -100,6 +102,7 @@ def get_args():
         args.seed = random.randint(1, 10000)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     time_stamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if args.evaluate:
@@ -112,7 +115,11 @@ def get_args():
 
     if args.device == 'cuda' and torch.cuda.is_available():
         cudnn.enabled = True
-        cudnn.benchmark = True
+        if args.deter:
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+        else:
+            cudnn.benchmark = True
         args.gpus = [args.local_rank]
         args.device = 'cuda:' + str(args.gpus[0])
         torch.cuda.set_device(args.gpus[0])
@@ -140,6 +147,7 @@ def is_bn(module):
     return isinstance(module, torch.nn.BatchNorm1d) or \
            isinstance(module, torch.nn.BatchNorm2d) or \
            isinstance(module, torch.nn.BatchNorm3d)
+
 
 def main():
     args = get_args()

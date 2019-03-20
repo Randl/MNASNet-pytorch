@@ -46,12 +46,12 @@ def get_loaders(dataroot, val_batch_size, train_batch_size, input_size, workers,
     pin_memory = False
     val_data = datasets.ImageFolder(root=os.path.join(dataroot, 'val'), transform=get_transform(False, input_size))
     val_sampler = DistributedSampler(val_data, num_nodes, local_rank)
-    val_loader = torch.utils.data.DataLoader(val_data, batch_size=val_batch_size,  sampler=val_sampler, num_workers=workers,
-                                             pin_memory=pin_memory)
+    val_loader = torch.utils.data.DataLoader(val_data, batch_size=val_batch_size, sampler=val_sampler,
+                                             num_workers=workers, pin_memory=pin_memory)
 
     train_data = datasets.ImageFolder(root=os.path.join(dataroot, 'train'),
                                       transform=get_transform(input_size=input_size))
     train_sampler = DistributedSampler(train_data, num_nodes, local_rank)
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=train_batch_size,  sampler=train_sampler,
+    train_loader = torch.utils.data.DataLoader(train_data, batch_size=train_batch_size, sampler=train_sampler,
                                                num_workers=workers, pin_memory=pin_memory)
     return train_loader, val_loader

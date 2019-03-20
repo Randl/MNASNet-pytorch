@@ -139,7 +139,7 @@ class CyclicLR(_LRScheduler):
         return 1 / (2. ** (x - 1))
 
     def _exp_range_scale_fn(self, x):
-        return self.gamma**(x)
+        return self.gamma ** (x)
 
     def get_lr(self):
         """Calculates the learning rate at batch index. This function treats
